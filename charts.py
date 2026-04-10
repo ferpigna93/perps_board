@@ -325,10 +325,11 @@ def plot_spot_flow(df: pd.DataFrame, symbol: str) -> go.Figure:
 
     if "cvd" in df.columns:
         cvd_color = "#26a69a" if df["cvd"].iloc[-1] >= 0 else "#ef5350"
+        cvd_fill  = "rgba(38,166,154,0.1)" if cvd_color == "#26a69a" else "rgba(239,83,80,0.1)"
         fig.add_trace(go.Scatter(
             x=df.index, y=df["cvd"], name="CVD",
             line=dict(color=cvd_color, width=1.5),
-            fill="tozeroy", fillcolor=f"rgba({','.join(str(c) for c in [38, 166, 154] if cvd_color == '#26a69a' else [239, 83, 80])},0.1)",
+            fill="tozeroy", fillcolor=cvd_fill,
         ), row=2, col=1)
         fig.add_hline(y=0, line_dash="dot", line_color="rgba(255,255,255,0.2)",
                       line_width=0.8, row=2, col=1)
