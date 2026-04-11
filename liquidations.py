@@ -57,39 +57,44 @@ def fetch_force_orders(symbol: str, days: int = 7,
                        limit_per_call: int = 1000) -> pd.DataFrame:
     """
     Pull historical forced-liquidation orders from Binance, going back `days`
-    days.  Handles pagination automatically (max 1000 records per call, walks
-    backwards in time).
+    days.  Paginates in 1-day windows (Binance rejects windows > 24 h on this
+    endpoint) and walks backwards from now to `days` ago.
 
     Returns a DataFrame with columns:
         time (index, UTC), side, price, avg_price, qty, value_usdt
         side == 'SELL' → long liquidated  (price fell through their level)
         side == 'BUY'  → short liquidated (price rose through their level)
     """
-    # Import here to avoid circular import
     import binance_client as bc
 
-    end_ms   = int(datetime.now(timezone.utc).timestamp() * 1000)
-    start_ms = end_ms - int(days * 24 * 3600 * 1000)
+    _DAY_MS    = int(24 * 3600 * 1000)          # 1 day in ms — safe window size
+    _BUFFER_MS = 3_000                           # 3 s behind "now" to avoid clock-skew 400s
+
+    end_ms   = int(datetime.now(timezone.utc).timestamp() * 1000) - _BUFFER_MS
+    start_ms = end_ms - int(days * _DAY_MS)
 
     all_rows: list[dict] = []
-    cursor   = end_ms
+    cursor = end_ms
 
     while cursor > start_ms:
-        window_start = max(start_ms, cursor - int(7 * 24 * 3600 * 1000))
-        raw = bc._get(
-            bc.FUTURES_BASE, "/fapi/v1/allForceOrders",
-            {"symbol": symbol, "startTime": window_start,
-             "endTime": cursor, "limit": limit_per_call},
-        )
-        if not raw:
-            break
-        all_rows.extend(raw)
-        # Move cursor back to just before the earliest record we fetched
-        earliest = min(int(r["time"]) for r in raw)
-        cursor = earliest - 1
-        if len(raw) < limit_per_call:
-            break   # no more data in this window
-        _time.sleep(0.1)   # be gentle with the API
+        window_start = max(start_ms, cursor - _DAY_MS)
+        try:
+            raw = bc._get(
+                bc.FUTURES_BASE, "/fapi/v1/allForceOrders",
+                {"symbol": symbol, "startTime": window_start,
+                 "endTime": cursor, "limit": limit_per_call},
+                retries=2,
+            )
+        except RuntimeError:
+            # No data for this window or API error — move on
+            cursor = window_start - 1
+            _time.sleep(0.1)
+            continue
+
+        if raw:
+            all_rows.extend(raw)
+        cursor = window_start - 1
+        _time.sleep(0.15)   # ~6 calls/s — stay well within rate limits
 
     if not all_rows:
         return pd.DataFrame(columns=["side", "price", "avg_price", "qty", "value_usdt"])
