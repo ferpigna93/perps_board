@@ -1,6 +1,7 @@
 """
 Interactive Plotly charts for the Perps Board.
-Each function returns a plotly Figure; call save_all_charts() to write HTML files.
+Each function returns a plotly Figure; call save_all_charts() to write HTML files
+(individual pages plus one scrollable page with every chart stacked).
 """
 from __future__ import annotations
 
@@ -576,6 +577,104 @@ def plot_liquidation_estimated(
 
 # ── Save all charts to disk ───────────────────────────────────────────────────
 
+def _chart_entries(
+    fig_price_ta: go.Figure,
+    fig_oi: go.Figure,
+    fig_funding: go.Figure,
+    fig_ls: go.Figure,
+    fig_flow: go.Figure,
+    fig_liq_hist: go.Figure | None = None,
+    fig_liq_est: go.Figure | None = None,
+) -> list[tuple[str, str, go.Figure]]:
+    """Ordered (file_key, section_label, figure) for non-None charts."""
+    rows: list[tuple[str, str, go.Figure | None]] = [
+        ("1_price_ta",       "Price & technical indicators", fig_price_ta),
+        ("2_open_interest",  "Open interest",                fig_oi),
+        ("3_funding_rate",   "Funding rate",                 fig_funding),
+        ("4_ls_ratios",      "Long / short ratios",          fig_ls),
+        ("5_spot_flow",      "Spot flow",                    fig_flow),
+        ("6_liq_historical", "Historical liquidations",      fig_liq_hist),
+        ("7_liq_estimated",  "Estimated liquidations",       fig_liq_est),
+    ]
+    return [(k, label, f) for k, label, f in rows if f is not None]
+
+
+def _write_combined_html(symbol: str, entries: list[tuple[str, str, go.Figure]]) -> str:
+    """
+    One HTML page: load plotly.js from CDN only once (same URL as write_html uses — not the
+    pip package version), then each figure below the previous (vertical scroll, no overlap).
+    """
+    blocks: list[str] = []
+    for i, (key, label, fig) in enumerate(entries):
+        # First fragment must include plotlyjs: the CDN path uses the bundled plotly.js
+        # semver (e.g. 2.35.2), not the Python package version — a wrong URL 404s and charts
+        # render as empty black boxes.
+        fragment = fig.to_html(
+            include_plotlyjs="cdn" if i == 0 else False,
+            full_html=False,
+            config={"displayModeBar": True, "responsive": True},
+        )
+        blocks.append(
+            f'<section class="chart-block" id="chart-{key}" '
+            f'aria-label="{label}">\n{fragment}\n</section>'
+        )
+    body = "\n".join(blocks)
+    html = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>{symbol} — Perps Board (all charts)</title>
+  <style>
+    html {{ scroll-behavior: smooth; }}
+    body {{
+      margin: 0;
+      background: #0d0d0d;
+      color: #e8e8e8;
+      font-family: system-ui, -apple-system, sans-serif;
+    }}
+    .page-header {{
+      padding: 1rem 1.25rem 0.5rem;
+      border-bottom: 1px solid #2a2a2a;
+    }}
+    .page-header h1 {{
+      margin: 0;
+      font-size: 1.15rem;
+      font-weight: 600;
+    }}
+    .page-header p {{
+      margin: 0.35rem 0 0;
+      font-size: 0.85rem;
+      opacity: 0.75;
+    }}
+    .chart-block {{
+      width: 100%;
+      box-sizing: border-box;
+      padding: 0.75rem 0.5rem 2rem;
+      border-bottom: 1px solid #252525;
+    }}
+    .chart-block:last-child {{ border-bottom: none; }}
+    .chart-block .plotly-graph-div {{
+      width: 100% !important;
+      max-width: 100%;
+    }}
+  </style>
+</head>
+<body>
+  <header class="page-header">
+    <h1>{symbol} — all charts</h1>
+    <p>Scroll to view each chart in order (same content as the individual HTML files).</p>
+  </header>
+{body}
+</body>
+</html>
+"""
+    path = os.path.join(CHART_DIR, f"{symbol}_all_charts.html")
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(html)
+    return path
+
+
 def save_all_charts(
     symbol: str,
     fig_price_ta: go.Figure,
@@ -586,22 +685,17 @@ def save_all_charts(
     fig_liq_hist: go.Figure | None = None,
     fig_liq_est: go.Figure | None = None,
 ) -> list[str]:
-    """Write all figures as self-contained HTML files; return the list of paths."""
+    """Write each figure as its own HTML plus one combined scrollable page; return paths."""
+    entries = _chart_entries(
+        fig_price_ta, fig_oi, fig_funding, fig_ls, fig_flow,
+        fig_liq_hist, fig_liq_est,
+    )
     _mkdir()
-    mapping: dict[str, go.Figure | None] = {
-        "1_price_ta":       fig_price_ta,
-        "2_open_interest":  fig_oi,
-        "3_funding_rate":   fig_funding,
-        "4_ls_ratios":      fig_ls,
-        "5_spot_flow":      fig_flow,
-        "6_liq_historical": fig_liq_hist,
-        "7_liq_estimated":  fig_liq_est,
-    }
-    paths = []
-    for name, fig in mapping.items():
-        if fig is None:
-            continue
-        path = os.path.join(CHART_DIR, f"{symbol}_{name}.html")
+    paths: list[str] = []
+    for key, _label, fig in entries:
+        path = os.path.join(CHART_DIR, f"{symbol}_{key}.html")
         fig.write_html(path, include_plotlyjs="cdn")
         paths.append(path)
+    if entries:
+        paths.append(_write_combined_html(symbol, entries))
     return paths
