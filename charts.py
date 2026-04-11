@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import os
 
+import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
@@ -361,6 +362,218 @@ def plot_spot_flow(df: pd.DataFrame, symbol: str) -> go.Figure:
     return fig
 
 
+# ── 6. Historical Liquidation Heatmap ────────────────────────────────────────
+
+def plot_liquidation_historical(heatmap_data: dict, symbol: str) -> go.Figure:
+    """
+    2-D heatmap of actual forced-liquidation orders (from Binance allForceOrders).
+
+    Top panel    — price line
+    Middle panel — long  liquidation volume heatmap (SELL orders = longs liquidated)
+    Bottom panel — short liquidation volume heatmap (BUY  orders = shorts liquidated)
+
+    Color intensity = USD value of liquidations in that (time, price) cell.
+    Hot zones indicate where cascading liquidations have historically clustered.
+    """
+    if not heatmap_data:
+        fig = go.Figure()
+        fig.update_layout(title=f"{symbol} — Historical Liquidations (no data)",
+                          template="plotly_dark")
+        return fig
+
+    x  = heatmap_data["x_labels"]
+    y  = heatmap_data["y_prices"]
+    pl = heatmap_data["price_line"]
+
+    fig = make_subplots(
+        rows=3, cols=1,
+        shared_xaxes=True,
+        row_heights=[0.25, 0.375, 0.375],
+        vertical_spacing=0.03,
+        subplot_titles=[
+            "Price",
+            "Long Liquidations (SELL — price fell through level)",
+            "Short Liquidations (BUY — price rose through level)",
+        ],
+    )
+
+    # Price line
+    fig.add_trace(go.Scatter(
+        x=x, y=pl, name="Price",
+        line=dict(color="#ffffff", width=1.5),
+    ), row=1, col=1)
+
+    # Long liquidations heatmap (reds — danger when price falls)
+    z_long = heatmap_data["z_long"]
+    z_long_log = np.log1p(z_long)
+    fig.add_trace(go.Heatmap(
+        x=x, y=y, z=z_long_log,
+        name="Long Liq",
+        colorscale=[
+            [0.0,  "rgba(0,0,0,0)"],
+            [0.15, "rgba(255,200,0,0.3)"],
+            [0.5,  "rgba(255,100,0,0.7)"],
+            [1.0,  "rgba(255,0,0,1.0)"],
+        ],
+        showscale=False,
+        hovertemplate="Time: %{x}<br>Price: %{y:.4f}<br>Liq Vol (log): %{z:.2f}<extra>Longs</extra>",
+    ), row=2, col=1)
+    # Price overlay on long heatmap
+    fig.add_trace(go.Scatter(
+        x=x, y=pl, name="Price", line=dict(color="white", width=1),
+        showlegend=False,
+    ), row=2, col=1)
+
+    # Short liquidations heatmap (blues — danger when price rises)
+    z_short = heatmap_data["z_short"]
+    z_short_log = np.log1p(z_short)
+    fig.add_trace(go.Heatmap(
+        x=x, y=y, z=z_short_log,
+        name="Short Liq",
+        colorscale=[
+            [0.0,  "rgba(0,0,0,0)"],
+            [0.15, "rgba(0,200,255,0.3)"],
+            [0.5,  "rgba(0,100,255,0.7)"],
+            [1.0,  "rgba(100,0,255,1.0)"],
+        ],
+        showscale=False,
+        hovertemplate="Time: %{x}<br>Price: %{y:.4f}<br>Liq Vol (log): %{z:.2f}<extra>Shorts</extra>",
+    ), row=3, col=1)
+    fig.add_trace(go.Scatter(
+        x=x, y=pl, name="Price", line=dict(color="white", width=1),
+        showlegend=False,
+    ), row=3, col=1)
+
+    fig.update_layout(
+        title=f"{symbol} — Historical Liquidation Heatmap",
+        template="plotly_dark",
+        height=850,
+        xaxis_rangeslider_visible=False,
+        legend=dict(orientation="h", yanchor="bottom", y=1.01, xanchor="right", x=1),
+        margin=dict(l=70, r=20, t=70, b=40),
+    )
+    return fig
+
+
+# ── 7. Estimated Future Liquidation Heatmap ───────────────────────────────────
+
+def plot_liquidation_estimated(
+    liq_snapshot: pd.DataFrame,
+    heatmap_data: dict,
+    symbol: str,
+) -> go.Figure:
+    """
+    Two-panel chart estimating where future liquidation cascades could occur.
+
+    Left-side panel (snapshot):
+      Horizontal bar chart centred on the current price.
+      • Orange/red bars below current price → long liquidations if price falls here
+      • Blue bars above current price       → short liquidations if price rises here
+
+    Right-side panel (time-evolution heatmap):
+      Rolling estimated liquidation density (price × time).
+      Shows how the liquidation landscape has shifted as positions were built up.
+      White line = actual price.
+    """
+    if liq_snapshot.empty or not heatmap_data:
+        fig = go.Figure()
+        fig.update_layout(title=f"{symbol} — Estimated Liquidations (no data)",
+                          template="plotly_dark")
+        return fig
+
+    current_price = float(heatmap_data["current_price"])
+
+    # ── Left: snapshot bar chart ─────────────────────────────────────────────
+    fig = make_subplots(
+        rows=1, cols=2,
+        column_widths=[0.30, 0.70],
+        subplot_titles=[
+            f"Liquidation Snapshot @ {current_price:,.4f}",
+            "Rolling Estimated Liquidation Density (price × time)",
+        ],
+        horizontal_spacing=0.04,
+    )
+
+    snap = liq_snapshot.copy()
+    longs_mask  = snap["price"] <= current_price
+    shorts_mask = snap["price"] >  current_price
+
+    # Long liq bars (below current price)
+    fig.add_trace(go.Bar(
+        x=snap.loc[longs_mask, "liq_long"],
+        y=snap.loc[longs_mask, "price"],
+        orientation="h",
+        name="Long Liq (price falls)",
+        marker_color="rgba(255,100,30,0.75)",
+        hovertemplate="Price: %{y:.4f}<br>Liq Vol: $%{x:,.0f}<extra>Longs</extra>",
+    ), row=1, col=1)
+
+    # Short liq bars (above current price)
+    fig.add_trace(go.Bar(
+        x=snap.loc[shorts_mask, "liq_short"],
+        y=snap.loc[shorts_mask, "price"],
+        orientation="h",
+        name="Short Liq (price rises)",
+        marker_color="rgba(30,130,255,0.75)",
+        hovertemplate="Price: %{y:.4f}<br>Liq Vol: $%{x:,.0f}<extra>Shorts</extra>",
+    ), row=1, col=1)
+
+    # Current price horizontal line
+    fig.add_hline(
+        y=current_price, line_dash="dash",
+        line_color="rgba(255,255,255,0.8)", line_width=1.5,
+        annotation_text=f" {current_price:,.4f}",
+        annotation_position="right",
+        row=1, col=1,
+    )
+
+    # ── Right: rolling heatmap ────────────────────────────────────────────────
+    x_lbls  = heatmap_data["x_labels"]
+    y_prc   = heatmap_data["y_prices"]
+    z_mat   = heatmap_data["z"]
+    z_log   = np.log1p(z_mat)
+    pl      = heatmap_data["price_line"]
+
+    fig.add_trace(go.Heatmap(
+        x=x_lbls, y=y_prc, z=z_log,
+        colorscale=[
+            [0.0,  "rgba(0,0,30,0)"],
+            [0.10, "rgba(0,0,80,0.4)"],
+            [0.35, "rgba(255,200,0,0.6)"],
+            [0.65, "rgba(255,80,0,0.85)"],
+            [1.0,  "rgba(255,0,0,1.0)"],
+        ],
+        showscale=True,
+        colorbar=dict(title="Liq Density<br>(log scale)", thickness=12, len=0.8),
+        hovertemplate="Time: %{x}<br>Price: %{y:.4f}<br>Density: %{z:.2f}<extra></extra>",
+    ), row=1, col=2)
+
+    fig.add_trace(go.Scatter(
+        x=x_lbls, y=pl, name="Price",
+        line=dict(color="white", width=1.5),
+        showlegend=False,
+    ), row=1, col=2)
+
+    # Mark current price on the heatmap too
+    fig.add_hline(
+        y=current_price, line_dash="dash",
+        line_color="rgba(255,255,255,0.5)", line_width=1,
+        row=1, col=2,
+    )
+
+    fig.update_layout(
+        title=f"{symbol} — Estimated Future Liquidation Heatmap",
+        template="plotly_dark",
+        height=750,
+        barmode="overlay",
+        legend=dict(orientation="h", yanchor="bottom", y=1.01, xanchor="right", x=1),
+        margin=dict(l=70, r=20, t=70, b=40),
+    )
+    fig.update_xaxes(title_text="Estimated Liq Volume (USDT)", row=1, col=1)
+    fig.update_yaxes(title_text="Price", row=1, col=1)
+    return fig
+
+
 # ── Save all charts to disk ───────────────────────────────────────────────────
 
 def save_all_charts(
@@ -370,18 +583,24 @@ def save_all_charts(
     fig_funding: go.Figure,
     fig_ls: go.Figure,
     fig_flow: go.Figure,
+    fig_liq_hist: go.Figure | None = None,
+    fig_liq_est: go.Figure | None = None,
 ) -> list[str]:
     """Write all figures as self-contained HTML files; return the list of paths."""
     _mkdir()
-    mapping = {
+    mapping: dict[str, go.Figure | None] = {
         "1_price_ta":       fig_price_ta,
         "2_open_interest":  fig_oi,
         "3_funding_rate":   fig_funding,
         "4_ls_ratios":      fig_ls,
         "5_spot_flow":      fig_flow,
+        "6_liq_historical": fig_liq_hist,
+        "7_liq_estimated":  fig_liq_est,
     }
     paths = []
     for name, fig in mapping.items():
+        if fig is None:
+            continue
         path = os.path.join(CHART_DIR, f"{symbol}_{name}.html")
         fig.write_html(path, include_plotlyjs="cdn")
         paths.append(path)
