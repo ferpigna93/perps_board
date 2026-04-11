@@ -3,11 +3,17 @@ Liquidation analysis for perpetual futures.
 
 Two complementary tools:
 
-1. HISTORICAL heatmap
-   Source: /fapi/v1/allForceOrders (Binance public endpoint)
-   How:    bucket each actual forced-liquidation order by (time, price),
-           producing a 2-D matrix of liq volume that is plotted as a heatmap
-           overlaid on the price chart.
+1. HISTORICAL heatmap  (inferred from OI + OHLCV — no deprecated endpoint)
+   Binance's /fapi/v1/allForceOrders has been permanently retired.
+   We reconstruct liquidation events from two signals that are always available:
+     a) A significant Open Interest DROP on a candle  →  positions were force-closed
+     b) Price direction of that candle                →  which side was liquidated
+          close < open  →  SELL (longs liquidated, price fell through their level)
+          close > open  →  BUY  (shorts liquidated, price rose through their level)
+   Estimated liquidation value  = |ΔOI_usdt| for each qualifying candle.
+   Liquidation price proxy      = candle low  (for longs) / high (for shorts).
+   This captures cascade events with high fidelity: large OI drops on
+   high-volatility candles are almost always forced-liquidation cascades.
 
 2. ESTIMATED future heatmap
    Source: recent OHLCV + current open-interest (no private data needed)
@@ -26,9 +32,6 @@ Interpretation:
   - BUY-side  liq (shorts)     → accumulates ABOVE the current price
 """
 from __future__ import annotations
-
-import time as _time
-from datetime import datetime, timezone, timedelta
 
 import numpy as np
 import pandas as pd
@@ -51,63 +54,81 @@ LEVERAGE_DIST: dict[int, float] = {
 _MMR = 0.005
 
 
-# ── Historical liquidation data ───────────────────────────────────────────────
+# ── Historical liquidation inference (OI + OHLCV) ────────────────────────────
 
-def fetch_force_orders(symbol: str, days: int = 7,
-                       limit_per_call: int = 1000) -> pd.DataFrame:
+def infer_liquidations_from_oi(
+    df_fut: pd.DataFrame,
+    df_oi: pd.DataFrame,
+    oi_drop_threshold: float = 0.003,
+) -> pd.DataFrame:
     """
-    Pull historical forced-liquidation orders from Binance, going back `days`
-    days.  Paginates in 1-day windows (Binance rejects windows > 24 h on this
-    endpoint) and walks backwards from now to `days` ago.
+    Infer historical liquidation events from Open Interest drops + price direction.
+    Replaces the retired /fapi/v1/allForceOrders endpoint.
 
-    Returns a DataFrame with columns:
-        time (index, UTC), side, price, avg_price, qty, value_usdt
-        side == 'SELL' → long liquidated  (price fell through their level)
-        side == 'BUY'  → short liquidated (price rose through their level)
+    Methodology
+    -----------
+    When OI drops by more than `oi_drop_threshold` on a candle, positions were
+    forcibly closed (liquidated).  The candle's price direction tells us which
+    side was hit:
+      close < open  →  side = 'SELL'  (longs liquidated, price fell)
+      close > open  →  side = 'BUY'   (shorts liquidated, price rose)
+
+    Liquidation price proxy:
+      SELL events → candle low  (the level at which longs were stopped out)
+      BUY  events → candle high (the level at which shorts were stopped out)
+
+    Liquidation volume proxy:
+      |ΔOI_usdt| — the USDT value of the OI that disappeared in that candle.
+
+    Parameters
+    ----------
+    df_fut            : futures OHLCV DataFrame with DatetimeTZ index
+    df_oi             : OI history (sumOpenInterestValue column, USDT)
+    oi_drop_threshold : minimum fractional OI drop to qualify (default 0.3 %)
+
+    Returns
+    -------
+    DataFrame with index = candle open_time (UTC) and columns:
+        side, price, avg_price, qty, value_usdt
     """
-    import binance_client as bc
+    # Align OI values to futures candle timestamps
+    oi_aligned = (
+        df_oi["sumOpenInterestValue"]
+        .reindex(df_fut.index, method="nearest")
+        .ffill()
+    )
 
-    _DAY_MS    = int(24 * 3600 * 1000)          # 1 day in ms — safe window size
-    _BUFFER_MS = 3_000                           # 3 s behind "now" to avoid clock-skew 400s
+    df = df_fut[["open", "high", "low", "close", "volume"]].copy()
+    df["oi_value"]      = oi_aligned
+    df["oi_change_pct"] = df["oi_value"].pct_change()
 
-    end_ms   = int(datetime.now(timezone.utc).timestamp() * 1000) - _BUFFER_MS
-    start_ms = end_ms - int(days * _DAY_MS)
+    # Only candles with a meaningful OI drop qualify as liquidation events
+    liq_mask = df["oi_change_pct"] < -oi_drop_threshold
+    df_liq   = df[liq_mask].copy()
 
-    all_rows: list[dict] = []
-    cursor = end_ms
+    if df_liq.empty:
+        return pd.DataFrame(
+            columns=["side", "price", "avg_price", "qty", "value_usdt"]
+        )
 
-    while cursor > start_ms:
-        window_start = max(start_ms, cursor - _DAY_MS)
-        try:
-            raw = bc._get(
-                bc.FUTURES_BASE, "/fapi/v1/allForceOrders",
-                {"symbol": symbol, "startTime": window_start,
-                 "endTime": cursor, "limit": limit_per_call},
-                retries=2,
-            )
-        except RuntimeError:
-            # No data for this window or API error — move on
-            cursor = window_start - 1
-            _time.sleep(0.1)
-            continue
+    # Which side was liquidated?
+    df_liq["side"] = np.where(df_liq["close"] < df_liq["open"], "SELL", "BUY")
 
-        if raw:
-            all_rows.extend(raw)
-        cursor = window_start - 1
-        _time.sleep(0.15)   # ~6 calls/s — stay well within rate limits
+    # Price at which the liquidation cascade occurred
+    df_liq["price"] = np.where(
+        df_liq["side"] == "SELL",
+        df_liq["low"],    # longs stopped out near the candle low
+        df_liq["high"],   # shorts stopped out near the candle high
+    )
+    df_liq["avg_price"] = df_liq["price"]
 
-    if not all_rows:
-        return pd.DataFrame(columns=["side", "price", "avg_price", "qty", "value_usdt"])
+    # USDT value lost to liquidations in this candle
+    df_liq["value_usdt"] = df_liq["oi_change_pct"].abs() * df_liq["oi_value"]
+    df_liq["qty"] = (
+        df_liq["value_usdt"] / df_liq["price"].replace(0, float("nan"))
+    )
 
-    df = pd.DataFrame(all_rows)
-    df = df.drop_duplicates()
-    df["time"]      = pd.to_datetime(df["time"].astype(int), unit="ms", utc=True)
-    df["price"]     = df["price"].astype(float)
-    df["avg_price"] = df["avgPrice"].astype(float)
-    df["qty"]       = df["origQty"].astype(float)
-    df["value_usdt"] = df["qty"] * df["avg_price"]
-    df = df.set_index("time").sort_index()
-    return df[["side", "price", "avg_price", "qty", "value_usdt"]]
+    return df_liq[["side", "price", "avg_price", "qty", "value_usdt"]]
 
 
 def build_historical_heatmap(

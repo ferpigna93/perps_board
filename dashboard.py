@@ -54,10 +54,8 @@ def parse_args() -> argparse.Namespace:
                    help="Skip HTML chart generation")
     p.add_argument("--open", action="store_true",
                    help="Open generated charts in the default browser")
-    p.add_argument("--liq-days", type=int, default=7,
-                   help="Days of historical liquidation data to fetch (default: 7)")
     p.add_argument("--no-liq", action="store_true",
-                   help="Skip liquidation heatmaps (faster)")
+                   help="Skip liquidation heatmaps")
     return p.parse_args()
 
 
@@ -246,8 +244,8 @@ def print_flow_table(sfs: dict) -> None:
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
-def print_liq_table(stats: dict, days: int) -> None:
-    t = Table(title=f"Liquidations — last {days}d", box=box.ROUNDED,
+def print_liq_table(stats: dict) -> None:
+    t = Table(title="Liquidations — inferred from OI drops", box=box.ROUNDED,
               header_style="bold red")
     t.add_column("Metric", style="bold", min_width=26)
     t.add_column("Value", justify="right", min_width=16)
@@ -301,14 +299,14 @@ def main() -> None:
     est_hmap    = {}
 
     if not args.no_liq:
-        with console.status(
-            f"[bold green]Fetching liquidation history ({args.liq_days}d) …"
-        ):
+        with console.status("[bold green]Inferring liquidations from OI + OHLCV …"):
             try:
-                df_orders = liq.fetch_force_orders(symbol, days=args.liq_days)
+                df_orders = liq.infer_liquidations_from_oi(
+                    data["df_fut"], data["df_oi"]
+                )
                 liq_stats = liq.liq_stats(df_orders)
             except Exception as exc:
-                console.print(f"[yellow]WARN: Could not fetch liquidations: {exc}[/yellow]")
+                console.print(f"[yellow]WARN: Liquidation inference failed: {exc}[/yellow]")
                 df_orders = None
 
         with console.status("[bold green]Building liquidation heatmaps …"):
@@ -340,7 +338,7 @@ def main() -> None:
     print_flow_table(sfs)
     if liq_stats:
         console.print()
-        print_liq_table(liq_stats, args.liq_days)
+        print_liq_table(liq_stats)
 
     # 6 ─ Generate charts --------------------------------------------------------
     if not args.no_charts:
