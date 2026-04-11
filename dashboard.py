@@ -28,6 +28,7 @@ import binance_client as bc
 import charts as ch
 import config
 import indicators as ind
+import liquidations as liq
 import market_metrics as mm
 
 console = Console()
@@ -53,6 +54,10 @@ def parse_args() -> argparse.Namespace:
                    help="Skip HTML chart generation")
     p.add_argument("--open", action="store_true",
                    help="Open generated charts in the default browser")
+    p.add_argument("--liq-days", type=int, default=7,
+                   help="Days of historical liquidation data to fetch (default: 7)")
+    p.add_argument("--no-liq", action="store_true",
+                   help="Skip liquidation heatmaps (faster)")
     return p.parse_args()
 
 
@@ -241,6 +246,25 @@ def print_flow_table(sfs: dict) -> None:
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
+def print_liq_table(stats: dict, days: int) -> None:
+    t = Table(title=f"Liquidations — last {days}d", box=box.ROUNDED,
+              header_style="bold red")
+    t.add_column("Metric", style="bold", min_width=26)
+    t.add_column("Value", justify="right", min_width=16)
+
+    def _usdt(v):
+        return f"${v:>14,.0f}" if v else "—"
+
+    t.add_row("Total Liquidated (USDT)",  _usdt(stats.get("total_usdt")))
+    t.add_row("  → Longs liquidated",     _usdt(stats.get("long_usdt")))
+    t.add_row("  → Shorts liquidated",    _usdt(stats.get("short_usdt")))
+    t.add_row("Long liq %",
+              f"{stats['long_pct']:.1f}%" if stats.get("long_pct") is not None else "—")
+    t.add_row("Number of events",         str(stats.get("n_events", 0)))
+    t.add_row("Largest single event",     _usdt(stats.get("largest_event_usdt")))
+    console.print(t)
+
+
 def main() -> None:
     args   = parse_args()
     symbol = args.symbol.upper().replace(".P", "")   # strip TradingView suffix if present
@@ -269,7 +293,41 @@ def main() -> None:
         df_flow     = mm.add_spot_flow_metrics(data["df_spot"])
         sfs         = mm.spot_flow_summary(df_flow)
 
-    # 4 ─ Print terminal dashboard -----------------------------------------------
+    # 4 ─ Liquidation data -------------------------------------------------------
+    df_orders   = None
+    liq_stats   = {}
+    hist_hmap   = {}
+    liq_snap    = None
+    est_hmap    = {}
+
+    if not args.no_liq:
+        with console.status(
+            f"[bold green]Fetching liquidation history ({args.liq_days}d) …"
+        ):
+            try:
+                df_orders = liq.fetch_force_orders(symbol, days=args.liq_days)
+                liq_stats = liq.liq_stats(df_orders)
+            except Exception as exc:
+                console.print(f"[yellow]WARN: Could not fetch liquidations: {exc}[/yellow]")
+                df_orders = None
+
+        with console.status("[bold green]Building liquidation heatmaps …"):
+            oi_usdt = float(data["df_oi"]["sumOpenInterestValue"].iloc[-1])
+
+            if df_orders is not None and not df_orders.empty:
+                hist_hmap = liq.build_historical_heatmap(
+                    df_orders, data["df_fut"], n_price_bins=120, time_bucket="4h"
+                )
+
+            liq_snap = liq.estimate_liq_map(
+                data["df_fut"], oi_usdt, price_range=0.35, n_bins=300
+            )
+            est_hmap = liq.build_estimated_heatmap_over_time(
+                data["df_fut"], data["df_oi"], price_range=0.30,
+                n_price_bins=150, window=48,
+            )
+
+    # 5 ─ Print terminal dashboard -----------------------------------------------
     console.print()
     print_ta_table(signals, symbol, args.interval)
     console.print()
@@ -280,8 +338,11 @@ def main() -> None:
     print_ls_table(lss)
     console.print()
     print_flow_table(sfs)
+    if liq_stats:
+        console.print()
+        print_liq_table(liq_stats, args.liq_days)
 
-    # 5 ─ Generate charts --------------------------------------------------------
+    # 6 ─ Generate charts --------------------------------------------------------
     if not args.no_charts:
         with console.status("[bold green]Generating interactive HTML charts …"):
             recent = df_ta.tail(200)
@@ -294,8 +355,18 @@ def main() -> None:
             )
             fig_flow     = ch.plot_spot_flow(df_flow, symbol)
 
+            fig_liq_hist = None
+            fig_liq_est  = None
+            if not args.no_liq:
+                fig_liq_hist = ch.plot_liquidation_historical(hist_hmap, symbol)
+                if liq_snap is not None and est_hmap:
+                    fig_liq_est = ch.plot_liquidation_estimated(
+                        liq_snap, est_hmap, symbol
+                    )
+
             paths = ch.save_all_charts(
-                symbol, fig_price_ta, fig_oi, fig_funding, fig_ls, fig_flow
+                symbol, fig_price_ta, fig_oi, fig_funding, fig_ls, fig_flow,
+                fig_liq_hist, fig_liq_est,
             )
 
         console.print("\n[bold green]Charts saved:[/bold green]")
