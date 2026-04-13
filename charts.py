@@ -681,7 +681,7 @@ def save_all_charts(
     fig_oi: go.Figure,
     fig_funding: go.Figure,
     fig_ls: go.Figure,
-    fig_flow: go.Figure,
+    fig_flow: go.Figure | None = None,
     fig_liq_hist: go.Figure | None = None,
     fig_liq_est: go.Figure | None = None,
 ) -> list[str]:

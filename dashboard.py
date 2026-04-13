@@ -71,7 +71,6 @@ def fetch_all(symbol: str, interval: str, limit: int, oi_period: str) -> dict:
 
     steps = [
         ("Futures OHLCV",           lambda: bc.get_futures_klines(symbol, interval, limit)),
-        ("Spot OHLCV",              lambda: bc.get_spot_klines(symbol, interval, limit)),
         ("Funding rate history",    lambda: bc.get_funding_rate_history(symbol, limit=100)),
         ("Premium index",           lambda: bc.get_premium_index(symbol)),
         ("Open interest (current)", lambda: bc.get_open_interest_current(symbol)),
@@ -92,9 +91,22 @@ def fetch_all(symbol: str, interval: str, limit: int, oi_period: str) -> dict:
         with console.status(f"[bold green]Fetching {label} …"):
             results.append(fn())
 
-    keys = ["df_fut", "df_spot", "df_funding", "premium", "oi_current",
+    keys = ["df_fut", "df_funding", "premium", "oi_current",
             "df_oi", "df_global", "df_top_acc", "df_top_pos", "df_taker"]
-    return dict(zip(keys, results))
+    data = dict(zip(keys, results))
+
+    # Spot klines are optional — futures-only symbols (e.g. RAVEUSDT) have no spot market
+    with console.status("[bold green]Fetching Spot OHLCV …"):
+        try:
+            data["df_spot"] = bc.get_spot_klines(symbol, interval, limit)
+        except RuntimeError:
+            console.print(
+                f"[yellow]INFO: No spot market for {symbol} — "
+                "CVD / net money flow will be skipped.[/yellow]"
+            )
+            data["df_spot"] = None
+
+    return data
 
 
 # ── Terminal tables ───────────────────────────────────────────────────────────
@@ -283,13 +295,17 @@ def main() -> None:
 
     # 3 ─ Compute market metrics -------------------------------------------------
     with console.status("[bold green]Computing market metrics …"):
-        fs          = mm.funding_summary(data["df_funding"], data["premium"])
-        df_oi_enr   = mm.enrich_oi(data["df_oi"], data["df_fut"])
-        ois         = mm.oi_summary(data["df_oi"])
-        lss         = mm.ls_summary(data["df_global"], data["df_top_acc"],
-                                    data["df_top_pos"], data["df_taker"])
-        df_flow     = mm.add_spot_flow_metrics(data["df_spot"])
-        sfs         = mm.spot_flow_summary(df_flow)
+        fs        = mm.funding_summary(data["df_funding"], data["premium"])
+        df_oi_enr = mm.enrich_oi(data["df_oi"], data["df_fut"])
+        ois       = mm.oi_summary(data["df_oi"])
+        lss       = mm.ls_summary(data["df_global"], data["df_top_acc"],
+                                  data["df_top_pos"], data["df_taker"])
+        if data["df_spot"] is not None:
+            df_flow = mm.add_spot_flow_metrics(data["df_spot"])
+            sfs     = mm.spot_flow_summary(df_flow)
+        else:
+            df_flow = None
+            sfs     = None
 
     # 4 ─ Liquidation data -------------------------------------------------------
     df_orders   = None
@@ -334,8 +350,9 @@ def main() -> None:
     print_oi_table(ois)
     console.print()
     print_ls_table(lss)
-    console.print()
-    print_flow_table(sfs)
+    if sfs is not None:
+        console.print()
+        print_flow_table(sfs)
     if liq_stats:
         console.print()
         print_liq_table(liq_stats)
@@ -351,7 +368,7 @@ def main() -> None:
                 data["df_global"], data["df_top_acc"], data["df_top_pos"],
                 data["df_taker"], data["df_fut"], symbol,
             )
-            fig_flow     = ch.plot_spot_flow(df_flow, symbol)
+            fig_flow = ch.plot_spot_flow(df_flow, symbol) if df_flow is not None else None
 
             fig_liq_hist = None
             fig_liq_est  = None
