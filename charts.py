@@ -685,17 +685,12 @@ def save_all_charts(
     fig_liq_hist: go.Figure | None = None,
     fig_liq_est: go.Figure | None = None,
 ) -> list[str]:
-    """Write each figure as its own HTML plus one combined scrollable page; return paths."""
+    """Write all charts as a single scrollable HTML file; return [path]."""
     entries = _chart_entries(
         fig_price_ta, fig_oi, fig_funding, fig_ls, fig_flow,
         fig_liq_hist, fig_liq_est,
     )
     _mkdir()
-    paths: list[str] = []
-    for key, _label, fig in entries:
-        path = os.path.join(CHART_DIR, f"{symbol}_{key}.html")
-        fig.write_html(path, include_plotlyjs="cdn")
-        paths.append(path)
-    if entries:
-        paths.append(_write_combined_html(symbol, entries))
-    return paths
+    if not entries:
+        return []
+    return [_write_combined_html(symbol, entries)]
