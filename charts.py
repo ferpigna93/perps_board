@@ -641,17 +641,21 @@ def plot_ml_signal(
                   row=2, col=1)
 
     # Vertical marker at the current-signal timestamp.
-    # Must be a string — Plotly's annotation helper does float arithmetic on x,
-    # which breaks when x is a pandas Timestamp.
+    # add_vline with an annotation crashes on datetime x values (Plotly tries
+    # sum(x) for annotation positioning). Use add_shape + add_annotation instead.
     ts = current.get("timestamp")
     if ts is not None:
         ts_str = pd.Timestamp(ts).isoformat()
-        fig.add_vline(
-            x=ts_str, line_dash="dot",
-            line_color="rgba(255,255,0,0.55)", line_width=1.5,
-            annotation_text=" now",
-            annotation_font_color="rgba(255,255,0,0.8)",
-            annotation_position="top right",
+        fig.add_shape(
+            type="line", x0=ts_str, x1=ts_str, y0=0, y1=1,
+            xref="x2", yref="paper",
+            line=dict(color="rgba(255,255,0,0.55)", width=1.5, dash="dot"),
+        )
+        fig.add_annotation(
+            x=ts_str, y=1.02, xref="x2", yref="paper",
+            text="now", showarrow=False,
+            font=dict(color="rgba(255,255,0,0.8)", size=10),
+            xanchor="left", yanchor="bottom",
         )
 
     p_up = current.get("p_up", 0.0)
