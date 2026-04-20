@@ -575,6 +575,99 @@ def plot_liquidation_estimated(
     return fig
 
 
+# ── 8. ML Probability Signal ─────────────────────────────────────────────────
+
+def plot_ml_signal(
+    proba_df: pd.DataFrame,
+    df_price: pd.DataFrame,
+    symbol: str,
+    window_h: int,
+    threshold_pct: float,
+    current: dict,
+) -> go.Figure:
+    """
+    Two-panel chart:
+      Row 1 — Futures price (trimmed to the proba_df date range)
+      Row 2 — Calibrated P(up) and P(dn) probability series
+
+    Parameters
+    ----------
+    proba_df      : DataFrame(p_up, p_dn) from MLSignal.backtest_series()
+    df_price      : futures OHLCV DataFrame
+    current       : dict with p_up, p_dn, timestamp (last closed candle)
+    """
+    fig = make_subplots(
+        rows=2, cols=1,
+        shared_xaxes=True,
+        row_heights=[0.35, 0.65],
+        vertical_spacing=0.04,
+        subplot_titles=[
+            "Futures Price",
+            f"ML Signal — P(±{threshold_pct}% in {window_h}h)",
+        ],
+    )
+
+    # ── Row 1: price ─────────────────────────────────────────────────────────
+    mask = (df_price.index >= proba_df.index[0]) & (df_price.index <= proba_df.index[-1])
+    price_slice = df_price["close"].loc[mask]
+    fig.add_trace(go.Scatter(
+        x=price_slice.index, y=price_slice, name="Price",
+        line=dict(color="#26a69a", width=1.5),
+    ), row=1, col=1)
+
+    # ── Row 2: probabilities ──────────────────────────────────────────────────
+    fig.add_trace(go.Scatter(
+        x=proba_df.index, y=proba_df["p_up"],
+        name=f"P(+{threshold_pct}%)",
+        line=dict(color="#26a69a", width=2.0),
+        fill="tozeroy", fillcolor="rgba(38,166,154,0.12)",
+    ), row=2, col=1)
+
+    fig.add_trace(go.Scatter(
+        x=proba_df.index, y=proba_df["p_dn"],
+        name=f"P(−{threshold_pct}%)",
+        line=dict(color="#ef5350", width=2.0),
+        fill="tozeroy", fillcolor="rgba(239,83,80,0.12)",
+    ), row=2, col=1)
+
+    fig.add_hline(y=0.5, line_dash="dash",
+                  line_color="rgba(255,255,255,0.30)", line_width=1.0,
+                  row=2, col=1)
+    fig.add_hline(y=0.25, line_dash="dot",
+                  line_color="rgba(255,255,255,0.12)", line_width=0.8,
+                  row=2, col=1)
+    fig.add_hline(y=0.75, line_dash="dot",
+                  line_color="rgba(255,255,255,0.12)", line_width=0.8,
+                  row=2, col=1)
+
+    # Vertical marker at the current-signal timestamp
+    ts = current.get("timestamp")
+    if ts is not None:
+        fig.add_vline(
+            x=ts, line_dash="dot",
+            line_color="rgba(255,255,0,0.55)", line_width=1.5,
+            annotation_text=" now",
+            annotation_font_color="rgba(255,255,0,0.8)",
+            annotation_position="top right",
+        )
+
+    p_up = current.get("p_up", 0.0)
+    p_dn = current.get("p_dn", 0.0)
+    title_suffix = f"  |  current: P(up) = {p_up:.1%}   P(dn) = {p_dn:.1%}"
+
+    fig.update_layout(
+        title=f"{symbol} — ML Probability Signal{title_suffix}",
+        template="plotly_dark",
+        height=700,
+        xaxis_rangeslider_visible=False,
+        legend=dict(orientation="h", yanchor="bottom", y=1.01,
+                    xanchor="right", x=1, font_size=11),
+        margin=dict(l=60, r=20, t=70, b=40),
+    )
+    fig.update_yaxes(range=[0, 1], row=2, col=1, tickformat=".0%")
+    return fig
+
+
 # ── Save all charts to disk ───────────────────────────────────────────────────
 
 def _chart_entries(
@@ -585,6 +678,7 @@ def _chart_entries(
     fig_flow: go.Figure,
     fig_liq_hist: go.Figure | None = None,
     fig_liq_est: go.Figure | None = None,
+    fig_ml: go.Figure | None = None,
 ) -> list[tuple[str, str, go.Figure]]:
     """Ordered (file_key, section_label, figure) for non-None charts."""
     rows: list[tuple[str, str, go.Figure | None]] = [
@@ -595,6 +689,7 @@ def _chart_entries(
         ("5_spot_flow",      "Spot flow",                    fig_flow),
         ("6_liq_historical", "Historical liquidations",      fig_liq_hist),
         ("7_liq_estimated",  "Estimated liquidations",       fig_liq_est),
+        ("8_ml_signal",      "ML probability signal",        fig_ml),
     ]
     return [(k, label, f) for k, label, f in rows if f is not None]
 
@@ -684,11 +779,12 @@ def save_all_charts(
     fig_flow: go.Figure | None = None,
     fig_liq_hist: go.Figure | None = None,
     fig_liq_est: go.Figure | None = None,
+    fig_ml: go.Figure | None = None,
 ) -> list[str]:
     """Write all charts as a single scrollable HTML file; return [path]."""
     entries = _chart_entries(
         fig_price_ta, fig_oi, fig_funding, fig_ls, fig_flow,
-        fig_liq_hist, fig_liq_est,
+        fig_liq_hist, fig_liq_est, fig_ml,
     )
     _mkdir()
     if not entries:

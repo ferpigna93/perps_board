@@ -30,6 +30,7 @@ import config
 import indicators as ind
 import liquidations as liq
 import market_metrics as mm
+import ml_signal as ml
 
 console = Console()
 
@@ -56,6 +57,14 @@ def parse_args() -> argparse.Namespace:
                    help="Open generated charts in the default browser")
     p.add_argument("--no-liq", action="store_true",
                    help="Skip liquidation heatmaps")
+    p.add_argument("--ml", action="store_true",
+                   help="Run ML probability signal (XGBoost + calibration)")
+    p.add_argument("--ml-window", type=int, default=ml.DEFAULT_WINDOW_H,
+                   help="Forecast horizon in hours (default: %(default)s)")
+    p.add_argument("--ml-threshold", type=float, default=ml.DEFAULT_THRESHOLD_PCT,
+                   help="Target move %% (default: %(default)s)")
+    p.add_argument("--ml-candles", type=int, default=ml.DEFAULT_N_CANDLES_1H,
+                   help="1h candles of history for ML training (default: %(default)s)")
     return p.parse_args()
 
 
@@ -254,6 +263,38 @@ def print_flow_table(sfs: dict) -> None:
     console.print(t)
 
 
+def print_ml_table(current: dict, metrics: dict,
+                   window_h: int, threshold_pct: float) -> None:
+    t = Table(
+        title=f"ML Signal — P(±{threshold_pct}% in {window_h}h)",
+        box=box.ROUNDED, header_style="bold magenta",
+    )
+    t.add_column("Metric", style="bold", min_width=28)
+    t.add_column("Value", justify="right", min_width=14)
+
+    def _prob(v: float) -> str:
+        if v >= 0.60:
+            return f"[bold red]{v:.1%}[/bold red]"
+        if v >= 0.40:
+            return f"[yellow]{v:.1%}[/yellow]"
+        return f"[dim]{v:.1%}[/dim]"
+
+    t.add_row(f"P(+{threshold_pct}% in {window_h}h)",  _prob(current["p_up"]))
+    t.add_row(f"P(−{threshold_pct}% in {window_h}h)",  _prob(current["p_dn"]))
+    t.add_row("As-of timestamp",                        str(current["timestamp"]))
+    if metrics.get("auc_up") is not None:
+        t.add_row("AUC-ROC (up model)",    f"{metrics['auc_up']:.3f}")
+    if metrics.get("auc_dn") is not None:
+        t.add_row("AUC-ROC (down model)",  f"{metrics['auc_dn']:.3f}")
+    t.add_row("Brier score (up)",          f"{metrics.get('brier_up', '—')}")
+    t.add_row("Brier score (down)",        f"{metrics.get('brier_dn', '—')}")
+    t.add_row("Training samples",          str(metrics.get("n_train", "—")))
+    t.add_row("Test samples",              str(metrics.get("n_test",  "—")))
+    t.add_row("Positive events — up %",    f"{metrics.get('pos_up_pct', '—')}%")
+    t.add_row("Positive events — dn %",    f"{metrics.get('pos_dn_pct', '—')}%")
+    console.print(t)
+
+
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def print_liq_table(stats: dict) -> None:
@@ -341,7 +382,27 @@ def main() -> None:
                 n_price_bins=150, window=48,
             )
 
-    # 5 ─ Print terminal dashboard -----------------------------------------------
+    # 5 ─ ML signal (optional) ---------------------------------------------------
+    ml_result: dict | None = None
+    if args.ml:
+        with console.status(
+            f"[bold green]Training ML signal "
+            f"(window={args.ml_window}h, threshold={args.ml_threshold}%) …"
+        ):
+            try:
+                ml_result = ml.run_ml_pipeline(
+                    symbol        = symbol,
+                    window_h      = args.ml_window,
+                    threshold_pct = args.ml_threshold,
+                    n_candles_1h  = args.ml_candles,
+                    df_oi         = data["df_oi"],
+                    df_funding    = data["df_funding"],
+                )
+            except Exception as exc:
+                console.print(f"[yellow]WARN: ML pipeline failed: {exc}[/yellow]")
+                ml_result = None
+
+    # 6 ─ Print terminal dashboard -----------------------------------------------
     console.print()
     print_ta_table(signals, symbol, args.interval)
     console.print()
@@ -356,8 +417,14 @@ def main() -> None:
     if liq_stats:
         console.print()
         print_liq_table(liq_stats)
+    if ml_result is not None:
+        console.print()
+        print_ml_table(
+            ml_result["current"], ml_result["metrics"],
+            args.ml_window, args.ml_threshold,
+        )
 
-    # 6 ─ Generate charts --------------------------------------------------------
+    # 7 ─ Generate charts --------------------------------------------------------
     if not args.no_charts:
         with console.status("[bold green]Generating interactive HTML charts …"):
             recent = df_ta.tail(200)
@@ -379,9 +446,16 @@ def main() -> None:
                         liq_snap, est_hmap, symbol
                     )
 
+            fig_ml = None
+            if ml_result is not None:
+                fig_ml = ch.plot_ml_signal(
+                    ml_result["proba_df"], data["df_fut"], symbol,
+                    args.ml_window, args.ml_threshold, ml_result["current"],
+                )
+
             paths = ch.save_all_charts(
                 symbol, fig_price_ta, fig_oi, fig_funding, fig_ls, fig_flow,
-                fig_liq_hist, fig_liq_est,
+                fig_liq_hist, fig_liq_est, fig_ml,
             )
 
         console.print("\n[bold green]Charts saved:[/bold green]")

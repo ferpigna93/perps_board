@@ -162,3 +162,59 @@ def get_spot_klines(symbol: str, interval: str, limit: int = 500) -> pd.DataFram
     raw = _get(SPOT_BASE, "/api/v3/klines",
                {"symbol": symbol, "interval": interval, "limit": limit})
     return _to_df_klines(raw)
+
+
+# ── Extended history (pagination for ML training) ─────────────────────────────
+
+# Milliseconds per candle for common intervals
+INTERVAL_MS: dict[str, int] = {
+    "1m": 60_000,       "3m": 180_000,    "5m": 300_000,
+    "15m": 900_000,     "30m": 1_800_000, "1h": 3_600_000,
+    "2h": 7_200_000,    "4h": 14_400_000, "6h": 21_600_000,
+    "8h": 28_800_000,   "12h": 43_200_000, "1d": 86_400_000,
+}
+
+
+def get_futures_klines_extended(symbol: str, interval: str,
+                                n_candles: int = 3000) -> pd.DataFrame:
+    """
+    Fetch more than 1 500 candles by paginating backwards from now.
+
+    Binance caps each klines call at 1 500 records.  This function issues
+    as many calls as needed, walking backwards in time, and returns a single
+    deduplicated DataFrame sorted oldest-first.
+
+    Parameters
+    ----------
+    symbol    : e.g. 'ZECUSDT'
+    interval  : e.g. '1h'
+    n_candles : total candles desired (default 3 000 ≈ 125 days at 1 h)
+    """
+    ms_per = INTERVAL_MS.get(interval, 3_600_000)
+    per_call = 1_500
+    all_dfs: list[pd.DataFrame] = []
+
+    end_ms = int(pd.Timestamp.now(tz="UTC").timestamp() * 1_000)
+
+    remaining = n_candles
+    while remaining > 0:
+        fetch = min(remaining, per_call)
+        start_ms = end_ms - fetch * ms_per
+        raw = _get(FUTURES_BASE, "/fapi/v1/klines", {
+            "symbol": symbol, "interval": interval,
+            "startTime": start_ms, "endTime": end_ms, "limit": fetch,
+        })
+        if not raw:
+            break
+        df = _to_df_klines(raw)
+        all_dfs.append(df)
+        end_ms = int(df.index[0].timestamp() * 1_000) - ms_per
+        remaining -= len(df)
+        time.sleep(0.12)
+
+    if not all_dfs:
+        return pd.DataFrame()
+
+    return (pd.concat(reversed(all_dfs))
+              .drop_duplicates()
+              .sort_index())
