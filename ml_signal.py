@@ -143,16 +143,18 @@ def build_feature_matrix(
     # ── Market structure ───────────────────────────────────────────────────────
     if df_oi is not None and not df_oi.empty:
         oi = _tz(df_oi)["sumOpenInterestValue"]
-        merged["oi_chg_1h"]  = oi.pct_change(1).reindex(merged.index, method="nearest").ffill()
-        merged["oi_chg_24h"] = oi.pct_change(24).reindex(merged.index, method="nearest").ffill()
+        # bfill() fills leading NaN (from pct_change warmup) so rows older than
+        # the OI coverage window are not silently dropped by dropna() later.
+        merged["oi_chg_1h"]  = oi.pct_change(1).reindex(merged.index, method="nearest").bfill().ffill()
+        merged["oi_chg_24h"] = oi.pct_change(24).reindex(merged.index, method="nearest").bfill().ffill()
 
     if df_funding is not None and not df_funding.empty:
         fr = _tz(df_funding)["fundingRate"]
-        merged["funding_rate"]   = fr.reindex(merged.index, method="nearest").ffill()
+        merged["funding_rate"]   = fr.reindex(merged.index, method="nearest").bfill().ffill()
         merged["funding_7d_avg"] = (
             fr.rolling(21).mean()
               .reindex(merged.index, method="nearest")
-              .ffill()
+              .bfill().ffill()
         )
 
     # ── Clean ─────────────────────────────────────────────────────────────────
