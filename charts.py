@@ -584,35 +584,53 @@ def plot_ml_signal(
     window_h: int,
     threshold_pct: float,
     current: dict,
+    signal_threshold: float = 0.75,
 ) -> go.Figure:
     """
     Two-panel chart:
-      Row 1 — Futures price (trimmed to the proba_df date range)
-      Row 2 — Calibrated P(up) and P(dn) probability series
+      Row 1 — Full-period futures price with dotted vertical lines marking
+              candles where P(up) or P(dn) exceeded signal_threshold.
+              Green lines = model predicted a strong up-move.
+              Red lines   = model predicted a strong down-move.
+      Row 2 — Calibrated P(up) and P(dn) probability time series.
 
     Parameters
     ----------
-    proba_df      : DataFrame(p_up, p_dn) from MLSignal.backtest_series()
-    df_price      : futures OHLCV DataFrame
-    current       : dict with p_up, p_dn, timestamp (last closed candle)
+    proba_df         : DataFrame(p_up, p_dn) from MLSignal.backtest_series()
+    df_price         : 1h OHLCV DataFrame covering the full ML evaluation period
+    current          : {"p_up", "p_dn", "timestamp"} for the last closed candle
+    signal_threshold : probability level above which a vertical line is drawn (default 0.75)
     """
     fig = make_subplots(
         rows=2, cols=1,
         shared_xaxes=True,
-        row_heights=[0.35, 0.65],
+        row_heights=[0.40, 0.60],
         vertical_spacing=0.04,
         subplot_titles=[
-            "Futures Price",
+            f"Futures Price  (dotted lines = P > {signal_threshold:.0%})",
             f"ML Signal — P(±{threshold_pct}% in {window_h}h)",
         ],
     )
 
     # ── Row 1: price ─────────────────────────────────────────────────────────
+    # Use the full proba_df date range so the chart covers the entire evaluated period.
     mask = (df_price.index >= proba_df.index[0]) & (df_price.index <= proba_df.index[-1])
     price_slice = df_price["close"].loc[mask]
     fig.add_trace(go.Scatter(
         x=price_slice.index, y=price_slice, name="Price",
         line=dict(color="#26a69a", width=1.5),
+    ), row=1, col=1)
+
+    # Dummy traces for legend entries (shapes don't appear in the legend)
+    fig.add_trace(go.Scatter(
+        x=[None], y=[None], mode="lines",
+        line=dict(color="rgba(38,166,154,0.75)", width=1, dash="dot"),
+        name=f"P(up) > {signal_threshold:.0%}",
+    ), row=1, col=1)
+    fig.add_trace(go.Scatter(
+        x=[None], y=[None], mode="lines",
+        line=dict(color="rgba(239,83,80,0.75)", width=1, dash="dot"),
+        name=f"P(dn) > {signal_threshold:.0%}",
     ), row=1, col=1)
 
     # ── Row 2: probabilities ──────────────────────────────────────────────────
@@ -630,29 +648,47 @@ def plot_ml_signal(
         fill="tozeroy", fillcolor="rgba(239,83,80,0.12)",
     ), row=2, col=1)
 
-    fig.add_hline(y=0.5, line_dash="dash",
-                  line_color="rgba(255,255,255,0.30)", line_width=1.0,
-                  row=2, col=1)
+    fig.add_hline(y=0.5,  line_dash="dash",
+                  line_color="rgba(255,255,255,0.30)", line_width=1.0, row=2, col=1)
     fig.add_hline(y=0.25, line_dash="dot",
-                  line_color="rgba(255,255,255,0.12)", line_width=0.8,
-                  row=2, col=1)
-    fig.add_hline(y=0.75, line_dash="dot",
-                  line_color="rgba(255,255,255,0.12)", line_width=0.8,
-                  row=2, col=1)
+                  line_color="rgba(255,255,255,0.12)", line_width=0.8, row=2, col=1)
+    fig.add_hline(y=signal_threshold, line_dash="dot",
+                  line_color="rgba(255,255,255,0.22)", line_width=0.8, row=2, col=1)
 
-    # Vertical marker at the current-signal timestamp.
-    # add_vline with an annotation crashes on datetime x values (Plotly tries
-    # sum(x) for annotation positioning). Use add_shape + add_annotation instead.
+    # ── Shapes: signal lines on price panel + "now" marker ────────────────────
+    # Signal lines use yref="y" (price axis) so they are clipped to the price
+    # panel only and span from the visible price range min to max.
+    p_min = float(price_slice.min()) if not price_slice.empty else 0
+    p_max = float(price_slice.max()) if not price_slice.empty else 1
+
+    shapes: list[dict] = []
+
+    for ts_i, row_i in proba_df.iterrows():
+        ts_str = pd.Timestamp(ts_i).isoformat()
+        if row_i["p_up"] > signal_threshold:
+            shapes.append(dict(
+                type="line", x0=ts_str, x1=ts_str,
+                y0=p_min, y1=p_max, xref="x", yref="y",
+                line=dict(color="rgba(38,166,154,0.55)", width=1, dash="dot"),
+            ))
+        if row_i["p_dn"] > signal_threshold:
+            shapes.append(dict(
+                type="line", x0=ts_str, x1=ts_str,
+                y0=p_min, y1=p_max, xref="x", yref="y",
+                line=dict(color="rgba(239,83,80,0.55)", width=1, dash="dot"),
+            ))
+
+    # "now" marker spanning the full figure height
     ts = current.get("timestamp")
     if ts is not None:
         ts_str = pd.Timestamp(ts).isoformat()
-        fig.add_shape(
+        shapes.append(dict(
             type="line", x0=ts_str, x1=ts_str, y0=0, y1=1,
-            xref="x2", yref="paper",
+            xref="x", yref="paper",
             line=dict(color="rgba(255,255,0,0.55)", width=1.5, dash="dot"),
-        )
+        ))
         fig.add_annotation(
-            x=ts_str, y=1.02, xref="x2", yref="paper",
+            x=ts_str, y=1.02, xref="x", yref="paper",
             text="now", showarrow=False,
             font=dict(color="rgba(255,255,0,0.8)", size=10),
             xanchor="left", yanchor="bottom",
@@ -665,8 +701,9 @@ def plot_ml_signal(
     fig.update_layout(
         title=f"{symbol} — ML Probability Signal{title_suffix}",
         template="plotly_dark",
-        height=700,
+        height=750,
         xaxis_rangeslider_visible=False,
+        shapes=shapes,
         legend=dict(orientation="h", yanchor="bottom", y=1.01,
                     xanchor="right", x=1, font_size=11),
         margin=dict(l=60, r=20, t=70, b=40),

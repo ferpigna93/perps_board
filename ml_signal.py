@@ -412,4 +412,5 @@ def run_ml_pipeline(
         "metrics":      signal.metrics,
         "proba_df":     proba_df,
         "feature_cols": signal.feature_cols,
+        "df_1h":        df_1h,
     }

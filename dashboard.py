@@ -449,7 +449,7 @@ def main() -> None:
             fig_ml = None
             if ml_result is not None:
                 fig_ml = ch.plot_ml_signal(
-                    ml_result["proba_df"], data["df_fut"], symbol,
+                    ml_result["proba_df"], ml_result["df_1h"], symbol,
                     args.ml_window, args.ml_threshold, ml_result["current"],
                 )
 
