@@ -303,6 +303,16 @@ class MLSignal:
         calibrator.fit(raw_cal, y_cal.values)
         return model, calibrator
 
+    def feature_importance(self) -> dict[str, dict[str, float]]:
+        """
+        XGBoost 'gain' importance for every feature in both models.
+        Returns {"up": {feature: score}, "dn": {feature: score}}.
+        Higher gain = feature contributes more to reducing loss at split points.
+        """
+        def _imp(model: XGBClassifier) -> dict[str, float]:
+            return dict(zip(self.feature_cols, model.feature_importances_))
+        return {"up": _imp(self._model_up), "dn": _imp(self._model_dn)}
+
     # ── Inference ─────────────────────────────────────────────────────────────
 
     def _apply(self, model: XGBClassifier, calib: IsotonicRegression,
@@ -411,6 +421,8 @@ def run_ml_pipeline(
         "current":      current,
         "metrics":      signal.metrics,
         "proba_df":     proba_df,
+        "y_up":         y_u,
+        "y_dn":         y_d,
         "feature_cols": signal.feature_cols,
         "df_1h":        df_1h,
     }

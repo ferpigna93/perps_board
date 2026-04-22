@@ -738,16 +738,20 @@ def _chart_entries(
     return [(k, label, f) for k, label, f in rows if f is not None]
 
 
-def _write_combined_html(symbol: str, entries: list[tuple[str, str, go.Figure]]) -> str:
+def _write_combined_html(
+    path: str,
+    page_title: str,
+    entries: list[tuple[str, str, go.Figure]],
+    subtitle: str = "Scroll to view each chart in order.",
+) -> str:
     """
-    One HTML page: load plotly.js from CDN only once (same URL as write_html uses — not the
-    pip package version), then each figure below the previous (vertical scroll, no overlap).
+    Write a multi-chart scrollable HTML page to *path* and return the path.
+
+    Plotly.js is loaded from CDN exactly once (first chart); subsequent charts
+    reuse the already-loaded bundle so the file stays small.
     """
     blocks: list[str] = []
     for i, (key, label, fig) in enumerate(entries):
-        # First fragment must include plotlyjs: the CDN path uses the bundled plotly.js
-        # semver (e.g. 2.35.2), not the Python package version — a wrong URL 404s and charts
-        # render as empty black boxes.
         fragment = fig.to_html(
             include_plotlyjs="cdn" if i == 0 else False,
             full_html=False,
@@ -763,7 +767,7 @@ def _write_combined_html(symbol: str, entries: list[tuple[str, str, go.Figure]])
 <head>
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
-  <title>{symbol} — Perps Board (all charts)</title>
+  <title>{page_title}</title>
   <style>
     html {{ scroll-behavior: smooth; }}
     body {{
@@ -801,16 +805,15 @@ def _write_combined_html(symbol: str, entries: list[tuple[str, str, go.Figure]])
 </head>
 <body>
   <header class="page-header">
-    <h1>{symbol} — all charts</h1>
-    <p>Scroll to view each chart in order (same content as the individual HTML files).</p>
+    <h1>{page_title}</h1>
+    <p>{subtitle}</p>
   </header>
 {body}
 </body>
 </html>
 """
-    path = os.path.join(CHART_DIR, f"{symbol}_all_charts.html")
-    with open(path, "w", encoding="utf-8") as f:
-        f.write(html)
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write(html)
     return path
 
 
@@ -833,4 +836,61 @@ def save_all_charts(
     _mkdir()
     if not entries:
         return []
-    return [_write_combined_html(symbol, entries)]
+    path = os.path.join(CHART_DIR, f"{symbol}_all_charts.html")
+    return [_write_combined_html(path, f"{symbol} — Perps Board", entries)]
+
+
+# ── 9. ML Feature Importance ──────────────────────────────────────────────────
+
+def plot_ml_feature_importance(
+    importances: dict[str, dict[str, float]],
+    symbol: str,
+    window_h: int,
+    threshold_pct: float,
+    top_n: int = 20,
+) -> go.Figure:
+    """
+    Side-by-side horizontal bar charts of the top-N XGBoost feature importances
+    for the up-move and down-move models.
+
+    Parameters
+    ----------
+    importances : {"up": {feature: score}, "dn": {feature: score}}
+                  from MLSignal.feature_importance()
+    top_n       : how many features to display per model (default 20)
+    """
+    from plotly.subplots import make_subplots  # already imported at top level
+
+    fig = make_subplots(
+        rows=1, cols=2,
+        subplot_titles=[
+            f"P(+{threshold_pct}%) — up model (top {top_n})",
+            f"P(−{threshold_pct}%) — down model (top {top_n})",
+        ],
+        horizontal_spacing=0.12,
+    )
+
+    for col, (direction, color) in enumerate([("up", "#26a69a"), ("dn", "#ef5350")], 1):
+        imp = importances.get(direction, {})
+        sorted_imp = sorted(imp.items(), key=lambda x: x[1])[-top_n:]
+        if not sorted_imp:
+            continue
+        feats, vals = zip(*sorted_imp)
+        fig.add_trace(go.Bar(
+            x=list(vals), y=list(feats),
+            orientation="h",
+            marker_color=color,
+            marker_opacity=0.80,
+            showlegend=False,
+            hovertemplate="%{y}<br>Importance: %{x:.4f}<extra></extra>",
+        ), row=1, col=col)
+
+    fig.update_layout(
+        title=(f"{symbol} — Feature Importance "
+               f"(window={window_h}h, threshold=±{threshold_pct}%)"),
+        template="plotly_dark",
+        height=max(400, top_n * 22 + 120),
+        margin=dict(l=180, r=40, t=70, b=40),
+    )
+    fig.update_xaxes(title_text="Importance (gain)")
+    return fig
