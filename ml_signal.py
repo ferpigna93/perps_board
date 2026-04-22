@@ -377,7 +377,12 @@ def run_ml_pipeline(
     """
     # 1 ── Fetch history ────────────────────────────────────────────────────────
     df_1h = bc.get_futures_klines_extended(symbol, "1h", n_candles_1h)
-    df_4h = bc.get_futures_klines(symbol, "4h", limit=1_000)
+
+    # 4h candles needed = 1h span ÷ 4  plus 300 extra for indicator warmup
+    # (EMA200 on 4h needs 200 rows = 800h; the buffer ensures those rows exist).
+    # get_futures_klines_extended handles pagination so there is no 1500-row cap.
+    n_candles_4h = n_candles_1h // 4 + 300
+    df_4h = bc.get_futures_klines_extended(symbol, "4h", n_candles_4h)
 
     if df_1h.empty or len(df_1h) < 200:
         raise ValueError(
