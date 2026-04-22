@@ -335,16 +335,24 @@ class MLSignal:
         """
         row    = X.iloc[[-2]]
         probas = self.predict_proba(row)
+        p_up   = round(float(probas["up"][0]), 4)
+        p_dn   = round(float(probas["dn"][0]), 4)
         return {
-            "p_up":      round(float(probas["up"][0]), 4),
-            "p_dn":      round(float(probas["dn"][0]), 4),
+            "p_up":      p_up,
+            "p_dn":      p_dn,
+            "bias":      round(100 * (p_up - p_dn), 2),
             "timestamp": X.index[-2],
         }
 
     def backtest_series(self, X: pd.DataFrame) -> pd.DataFrame:
-        """Historical probability time series (for charting)."""
-        p = self.predict_proba(X)
-        return pd.DataFrame({"p_up": p["up"], "p_dn": p["dn"]}, index=X.index)
+        """Historical probability time series including the directional bias index."""
+        p    = self.predict_proba(X)
+        p_up = p["up"]
+        p_dn = p["dn"]
+        return pd.DataFrame(
+            {"p_up": p_up, "p_dn": p_dn, "bias": 100 * (p_up - p_dn)},
+            index=X.index,
+        )
 
 
 # ── Full pipeline ─────────────────────────────────────────────────────────────

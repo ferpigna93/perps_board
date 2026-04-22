@@ -79,6 +79,10 @@ def print_signal_table(current: dict, metrics: dict,
 
     t.add_row(f"P(+{threshold_pct}% in {window_h}h)", _prob(current["p_up"]))
     t.add_row(f"P(−{threshold_pct}% in {window_h}h)", _prob(current["p_dn"]))
+    bias = current.get("bias", 0.0)
+    bias_str = (f"[green]{bias:+.1f}[/green]" if bias >= 0
+                else f"[red]{bias:+.1f}[/red]")
+    t.add_row("Directional bias  100×(P(up)−P(dn))", bias_str)
     t.add_row("As-of timestamp",        str(current["timestamp"]))
     if metrics.get("auc_up") is not None:
         t.add_row("AUC-ROC (up model)",    f"{metrics['auc_up']:.3f}")

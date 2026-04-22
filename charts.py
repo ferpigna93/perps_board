@@ -596,19 +596,20 @@ def plot_ml_signal(
 
     Parameters
     ----------
-    proba_df         : DataFrame(p_up, p_dn) from MLSignal.backtest_series()
+    proba_df         : DataFrame(p_up, p_dn, bias) from MLSignal.backtest_series()
     df_price         : 1h OHLCV DataFrame covering the full ML evaluation period
-    current          : {"p_up", "p_dn", "timestamp"} for the last closed candle
+    current          : {"p_up", "p_dn", "bias", "timestamp"} for the last closed candle
     signal_threshold : probability level above which a vertical line is drawn (default 0.75)
     """
     fig = make_subplots(
-        rows=2, cols=1,
+        rows=3, cols=1,
         shared_xaxes=True,
-        row_heights=[0.40, 0.60],
-        vertical_spacing=0.04,
+        row_heights=[0.38, 0.37, 0.25],
+        vertical_spacing=0.03,
         subplot_titles=[
             f"Futures Price  (dotted lines = P > {signal_threshold:.0%})",
             f"ML Signal — P(±{threshold_pct}% in {window_h}h)",
+            "Directional Bias Index  =  100 × (P(up) − P(dn))",
         ],
     )
 
@@ -655,6 +656,26 @@ def plot_ml_signal(
     fig.add_hline(y=signal_threshold, line_dash="dot",
                   line_color="rgba(255,255,255,0.22)", line_width=0.8, row=2, col=1)
 
+    # ── Row 3: directional bias index ────────────────────────────────────────
+    if "bias" in proba_df.columns:
+        bias = proba_df["bias"]
+        bias_colors = [
+            "#26a69a" if v >= 0 else "#ef5350" for v in bias
+        ]
+        fig.add_trace(go.Bar(
+            x=bias.index, y=bias,
+            name="Bias",
+            marker_color=bias_colors,
+            marker_opacity=0.75,
+            showlegend=False,
+        ), row=3, col=1)
+        fig.add_hline(y=0, line_dash="solid",
+                      line_color="rgba(255,255,255,0.25)", line_width=1.0, row=3, col=1)
+        fig.add_hline(y=25,  line_dash="dot",
+                      line_color="rgba(38,166,154,0.30)",  line_width=0.8, row=3, col=1)
+        fig.add_hline(y=-25, line_dash="dot",
+                      line_color="rgba(239,83,80,0.30)",   line_width=0.8, row=3, col=1)
+
     # ── Shapes: signal lines on price panel + "now" marker ────────────────────
     # Signal lines use yref="y" (price axis) so they are clipped to the price
     # panel only and span from the visible price range min to max.
@@ -694,21 +715,29 @@ def plot_ml_signal(
             xanchor="left", yanchor="bottom",
         )
 
-    p_up = current.get("p_up", 0.0)
-    p_dn = current.get("p_dn", 0.0)
-    title_suffix = f"  |  current: P(up) = {p_up:.1%}   P(dn) = {p_dn:.1%}"
+    p_up  = current.get("p_up",  0.0)
+    p_dn  = current.get("p_dn",  0.0)
+    bias  = current.get("bias",  0.0)
+    bias_color = "green" if bias >= 0 else "red"
+    title_suffix = (
+        f"  |  P(up)={p_up:.1%}  P(dn)={p_dn:.1%}  "
+        f"bias=[{bias_color}]{bias:+.1f}[/{bias_color}]"
+    )
 
     fig.update_layout(
         title=f"{symbol} — ML Probability Signal{title_suffix}",
         template="plotly_dark",
-        height=750,
+        height=850,
         xaxis_rangeslider_visible=False,
         shapes=shapes,
         legend=dict(orientation="h", yanchor="bottom", y=1.01,
                     xanchor="right", x=1, font_size=11),
         margin=dict(l=60, r=20, t=70, b=40),
     )
-    fig.update_yaxes(range=[0, 1], row=2, col=1, tickformat=".0%")
+    fig.update_yaxes(range=[0, 1],    row=2, col=1, tickformat=".0%")
+    fig.update_yaxes(range=[-100, 100], row=3, col=1,
+                     tickformat=".0f", zeroline=False,
+                     tickvals=[-100, -50, -25, 0, 25, 50, 100])
     return fig
 
 
