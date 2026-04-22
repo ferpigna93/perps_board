@@ -340,7 +340,7 @@ class MLSignal:
         return {
             "p_up":      p_up,
             "p_dn":      p_dn,
-            "bias":      round(0.5 * (p_up - p_dn), 4),
+            "bias":      round(100 * (p_up - p_dn), 2),
             "timestamp": X.index[-2],
         }
 
@@ -350,7 +350,7 @@ class MLSignal:
         p_up = p["up"]
         p_dn = p["dn"]
         return pd.DataFrame(
-            {"p_up": p_up, "p_dn": p_dn, "bias": 0.5 * (p_up - p_dn)},
+            {"p_up": p_up, "p_dn": p_dn, "bias": 100 * (p_up - p_dn)},
             index=X.index,
         )
 

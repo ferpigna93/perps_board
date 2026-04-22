@@ -609,7 +609,7 @@ def plot_ml_signal(
         subplot_titles=[
             f"Futures Price  (dotted lines = P > {signal_threshold:.0%})",
             f"ML Signal — P(±{threshold_pct}% in {window_h}h)",
-            "Directional Bias Index  =  0.5 × (P(up) − P(dn))",
+            "Directional Bias Index  =  100 × (P(up) − P(dn))",
         ],
     )
 
@@ -671,9 +671,9 @@ def plot_ml_signal(
         ), row=3, col=1)
         fig.add_hline(y=0, line_dash="solid",
                       line_color="rgba(255,255,255,0.25)", line_width=1.0, row=3, col=1)
-        fig.add_hline(y=0.25,  line_dash="dot",
+        fig.add_hline(y=25,  line_dash="dot",
                       line_color="rgba(38,166,154,0.30)",  line_width=0.8, row=3, col=1)
-        fig.add_hline(y=-0.25, line_dash="dot",
+        fig.add_hline(y=-25, line_dash="dot",
                       line_color="rgba(239,83,80,0.30)",   line_width=0.8, row=3, col=1)
 
     # ── Shapes: signal lines on price panel + "now" marker ────────────────────
@@ -721,7 +721,7 @@ def plot_ml_signal(
     bias_color = "green" if bias >= 0 else "red"
     title_suffix = (
         f"  |  P(up)={p_up:.1%}  P(dn)={p_dn:.1%}  "
-        f"bias=[{bias_color}]{bias:+.3f}[/{bias_color}]"
+        f"bias=[{bias_color}]{bias:+.1f}[/{bias_color}]"
     )
 
     fig.update_layout(
@@ -735,9 +735,9 @@ def plot_ml_signal(
         margin=dict(l=60, r=20, t=70, b=40),
     )
     fig.update_yaxes(range=[0, 1],    row=2, col=1, tickformat=".0%")
-    fig.update_yaxes(range=[-0.5, 0.5], row=3, col=1,
-                     tickformat=".2f", zeroline=False,
-                     tickvals=[-0.5, -0.25, 0, 0.25, 0.5])
+    fig.update_yaxes(range=[-100, 100], row=3, col=1,
+                     tickformat=".0f", zeroline=False,
+                     tickvals=[-100, -50, -25, 0, 25, 50, 100])
     return fig
 
 
