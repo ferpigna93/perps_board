@@ -38,6 +38,7 @@ from xgboost import XGBClassifier
 
 import binance_client as bc
 import indicators as ind
+from liquidations import liq_volume_in_range
 
 # ── Defaults ──────────────────────────────────────────────────────────────────
 DEFAULT_WINDOW_H      = 24
@@ -102,14 +103,17 @@ def build_feature_matrix(
     df_4h: pd.DataFrame,
     df_oi: pd.DataFrame | None = None,
     df_funding: pd.DataFrame | None = None,
+    threshold_pct: float = DEFAULT_THRESHOLD_PCT,
 ) -> pd.DataFrame:
     """
     Build the full feature matrix aligned to 1 h candle timestamps.
 
-    1 h features — RSI, EMA distances, BB, ATR, ADX, MACD, Stoch RSI,
-                   volume ratio, short-term returns.
-    4 h features — same set, aligned with pd.merge_asof (backward fill).
-    Market data  — funding rate (current + 7d avg), OI change % (1 h, 24 h).
+    1 h features  — RSI, EMA distances, BB, ATR, ADX, MACD, Stoch RSI,
+                    volume ratio, short-term returns.
+    4 h features  — same set, aligned with pd.merge_asof (backward fill).
+    Market data   — funding rate (current + 7d avg), OI change % (1 h, 24 h).
+    Liquidations  — liq_below / liq_above: fraction of OI with forced-close
+                    prices within ±threshold_pct of the current close.
     """
 
     def _tz(df: pd.DataFrame) -> pd.DataFrame:
@@ -155,6 +159,19 @@ def build_feature_matrix(
             fr.rolling(21).mean()
               .reindex(merged.index, method="nearest")
               .bfill().ffill()
+        )
+
+    # ── Liquidation pressure within the threshold range ───────────────────────
+    # liq_below: OI fraction of longs with forced-close price in
+    #            [close*(1-thr), close]  → acceleration risk on downside
+    # liq_above: same for shorts in [close, close*(1+thr)]
+    if df_oi is not None and not df_oi.empty:
+        liq_feats = liq_volume_in_range(df_1h, _tz(df_oi), threshold_pct)
+        merged["liq_below"] = (
+            liq_feats["liq_below"].reindex(merged.index).bfill().ffill()
+        )
+        merged["liq_above"] = (
+            liq_feats["liq_above"].reindex(merged.index).bfill().ffill()
         )
 
     # ── Clean ─────────────────────────────────────────────────────────────────
@@ -399,7 +416,7 @@ def run_ml_pipeline(
         )
 
     # 2 ── Feature matrix ───────────────────────────────────────────────────────
-    X_raw = build_feature_matrix(df_1h, df_4h, df_oi, df_funding)
+    X_raw = build_feature_matrix(df_1h, df_4h, df_oi, df_funding, threshold_pct)
 
     # 3 ── Labels ───────────────────────────────────────────────────────────────
     y_up, y_dn = build_labels(df_1h, window_h, threshold_pct)
