@@ -209,6 +209,72 @@ def liq_stats(df_orders: pd.DataFrame) -> dict:
     }
 
 
+def liq_volume_in_range(
+    df_klines: pd.DataFrame,
+    df_oi: pd.DataFrame,
+    threshold_pct: float,
+    window: int = 48,
+) -> pd.DataFrame:
+    """
+    Rolling estimate of the OI fraction sitting inside the ±threshold_pct
+    liquidation zone around each candle's close price.
+
+    Using the previous `window` candles as a volume-weighted proxy for the
+    entry-price distribution, and LEVERAGE_DIST as the leverage mix:
+
+      liq_below[t] — weighted fraction of longs whose forced-close price
+                     falls in [close*(1-thr), close].
+                     Interpretation: OI "gravity" that would accelerate a
+                     downward move of threshold_pct from this candle.
+
+      liq_above[t] — same for shorts in [close, close*(1+thr)].
+                     Interpretation: OI gravity that would accelerate an
+                     upward move.
+
+    Both columns are NaN for the first `window` candles.
+    Values are scale-invariant (volume-weighted, normalised by leverage distribution).
+    """
+    thr = threshold_pct / 100.0
+
+    oi_aligned = (
+        df_oi["sumOpenInterestValue"]
+        .reindex(df_klines.index, method="nearest")
+        .bfill().ffill()
+    )
+
+    closes  = df_klines["close"].values.astype(float)
+    volumes = df_klines["volume"].values.astype(float)
+    n       = len(closes)
+
+    below_arr = np.full(n, np.nan)
+    above_arr = np.full(n, np.nan)
+
+    for t in range(window, n):
+        close_t = closes[t]
+        p_low   = close_t * (1 - thr)
+        p_high  = close_t * (1 + thr)
+
+        win_c   = closes[t - window: t]
+        win_v   = volumes[t - window: t]
+        w       = win_v / (win_v.sum() or 1.0)
+
+        below = 0.0
+        above = 0.0
+        for leverage, lev_frac in LEVERAGE_DIST.items():
+            lp_long  = win_c * (1 - 1.0 / leverage + _MMR)
+            lp_short = win_c * (1 + 1.0 / leverage - _MMR)
+            below += np.sum(w[(lp_long  >= p_low)  & (lp_long  <= close_t)]) * lev_frac
+            above += np.sum(w[(lp_short >= close_t) & (lp_short <= p_high)]) * lev_frac
+
+        below_arr[t] = below
+        above_arr[t] = above
+
+    return pd.DataFrame(
+        {"liq_below": below_arr, "liq_above": above_arr},
+        index=df_klines.index,
+    )
+
+
 # ── Estimated future liquidation map ─────────────────────────────────────────
 
 def estimate_liq_map(
