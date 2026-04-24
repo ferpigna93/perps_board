@@ -54,6 +54,17 @@ def parse_args() -> argparse.Namespace:
                         "(default: %(default)s)")
     p.add_argument("--top-features", type=int, default=20,
                    help="Features to show in importance chart (default: %(default)s)")
+
+    dist = p.add_argument_group("Probability distribution (--dist)")
+    dist.add_argument("--dist", action="store_true",
+                      help="Compute P(reach level) across a range of threshold levels")
+    dist.add_argument("--dist-min", type=float, default=1.0,
+                      help="Minimum threshold %% for distribution sweep (default: %(default)s)")
+    dist.add_argument("--dist-max", type=float, default=8.0,
+                      help="Maximum threshold %% for distribution sweep (default: %(default)s)")
+    dist.add_argument("--dist-points", type=int, default=8,
+                      help="Number of threshold levels to evaluate (default: %(default)s)")
+
     p.add_argument("--open", action="store_true",
                    help="Open HTML report in the default browser when done")
     return p.parse_args()
@@ -94,6 +105,40 @@ def print_signal_table(current: dict, metrics: dict,
     t.add_row("Test samples",           str(metrics.get("n_test",  "—")))
     t.add_row("Positive events — up %", f"{metrics.get('pos_up_pct', '—')}%")
     t.add_row("Positive events — dn %", f"{metrics.get('pos_dn_pct', '—')}%")
+    console.print(t)
+
+
+def print_distribution_table(dist_df, current_price: float, window_h: int) -> None:
+    t = Table(
+        title=f"Probability Distribution — window {window_h}h",
+        box=box.ROUNDED, header_style="bold cyan",
+    )
+    t.add_column("Threshold", justify="right", min_width=10)
+    t.add_column("P(up)",     justify="right", min_width=10)
+    t.add_column("Price (+)", justify="right", min_width=12)
+    t.add_column("P(dn)",     justify="right", min_width=10)
+    t.add_column("Price (−)", justify="right", min_width=12)
+
+    def _prob(v: float) -> str:
+        if v >= 0.60:
+            return f"[bold yellow]{v:.1%}[/bold yellow]"
+        if v >= 0.40:
+            return f"[white]{v:.1%}[/white]"
+        return f"[dim]{v:.1%}[/dim]"
+
+    for _, row in dist_df.iterrows():
+        thr   = row["threshold"]
+        p_up  = row["p_up"]
+        p_dn  = row["p_dn"]
+        up_px = current_price * (1 + thr / 100)
+        dn_px = current_price * (1 - thr / 100)
+        t.add_row(
+            f"±{thr:.2f}%",
+            _prob(p_up),
+            f"[green]{up_px:,.4f}[/green]",
+            _prob(p_dn),
+            f"[red]{dn_px:,.4f}[/red]",
+        )
     console.print(t)
 
 
@@ -165,7 +210,41 @@ def main() -> None:
     console.print()
     print_top_features(result["signal"].feature_importance(), top_n=10)
 
-    # 4 ── Generate HTML report ─────────────────────────────────────────────────
+    # 4 ── Probability distribution (optional) ────────────────────────────────
+    dist_result = None
+    if args.dist:
+        console.print(
+            f"\n[cyan]Distribution:[/cyan] [bold white]{args.dist_points} levels, "
+            f"{args.dist_min}%–{args.dist_max}%[/bold white]\n"
+        )
+        with console.status(
+            f"[bold green]Sweeping {args.dist_points} threshold levels "
+            f"({args.dist_min}%–{args.dist_max}%) — "
+            f"building {args.dist_points * 2} models …"
+        ):
+            try:
+                dist_result = ml.run_probability_distribution(
+                    symbol       = symbol,
+                    window_h     = args.window,
+                    dist_min     = args.dist_min,
+                    dist_max     = args.dist_max,
+                    n_points     = args.dist_points,
+                    n_candles_1h = args.candles,
+                    df_oi        = df_oi,
+                    df_funding   = df_funding,
+                    df_1h        = result["df_1h"],
+                    df_4h        = result["df_4h"],
+                )
+            except Exception as exc:
+                console.print(f"[yellow]WARN: distribution sweep failed ({exc}) — skipping.[/yellow]")
+
+        if dist_result is not None and not dist_result["dist_df"].empty:
+            console.print()
+            print_distribution_table(
+                dist_result["dist_df"], dist_result["current_price"], args.window,
+            )
+
+    # 5 ── Generate HTML report ─────────────────────────────────────────────────
     with console.status("[bold green]Rendering charts …"):
         fig_signal = ch.plot_ml_signal(
             result["proba_df"], result["df_1h"], symbol,
@@ -182,11 +261,22 @@ def main() -> None:
             ("ml_signal",     "ML probability signal", fig_signal),
             ("ml_importance", "Feature importance",    fig_importance),
         ]
+        if dist_result is not None and not dist_result["dist_df"].empty:
+            fig_dist = ch.plot_probability_distribution(
+                dist_result["dist_df"], symbol,
+                args.window, dist_result["current_price"],
+            )
+            entries.append(("ml_distribution", "Probability distribution", fig_dist))
 
         os.makedirs(config.CHART_DIR, exist_ok=True)
         out_path = os.path.join(
             config.CHART_DIR,
             f"{symbol}_ml_report_w{args.window}_t{args.threshold}.html",
+        )
+        dist_note = (
+            f" · Distribution: {args.dist_points} levels "
+            f"{args.dist_min}%–{args.dist_max}%"
+            if args.dist else ""
         )
         ch._write_combined_html(
             out_path,
@@ -197,6 +287,7 @@ def main() -> None:
                 f"AUC up={result['metrics'].get('auc_up', '—')}  "
                 f"dn={result['metrics'].get('auc_dn', '—')}  · "
                 f"Signal threshold: P > {args.signal_threshold:.0%}"
+                f"{dist_note}"
             ),
         )
 

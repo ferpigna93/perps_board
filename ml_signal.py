@@ -455,4 +455,91 @@ def run_ml_pipeline(
         "y_dn":         y_d,
         "feature_cols": signal.feature_cols,
         "df_1h":        df_1h,
+        "df_4h":        df_4h,
     }
+
+
+# ── Probability distribution ──────────────────────────────────────────────────
+
+def run_probability_distribution(
+    symbol:        str,
+    window_h:      int,
+    dist_min:      float,
+    dist_max:      float,
+    n_points:      int,
+    n_candles_1h:  int   = DEFAULT_N_CANDLES_1H,
+    df_oi:         pd.DataFrame | None = None,
+    df_funding:    pd.DataFrame | None = None,
+    df_1h:         pd.DataFrame | None = None,
+    df_4h:         pd.DataFrame | None = None,
+) -> dict:
+    """
+    Sweep N threshold levels from dist_min% to dist_max% and return the
+    probability of the price reaching each level within window_h hours.
+
+    The feature matrix is built once (liq features calibrated at dist_max),
+    then only labels are rebuilt per threshold — training cost is O(n_points).
+    After sweeping, P(up) and P(dn) are post-processed with isotonic regression
+    to enforce the expected monotonicity: higher threshold → lower probability.
+
+    If df_1h / df_4h are already available from a prior pipeline run, pass them
+    in to skip the data-fetch step.
+
+    Returns
+    -------
+    dict with keys:
+        dist_df       — DataFrame(threshold, p_up, p_dn) sorted by threshold
+        current_price — float, last close in df_1h
+    """
+    # 1 ── Fetch data only when not already available ──────────────────────────
+    if df_1h is None:
+        df_1h = bc.get_futures_klines_extended(symbol, "1h", n_candles_1h)
+    if df_4h is None:
+        n_candles_4h = n_candles_1h // 4 + 300
+        df_4h = bc.get_futures_klines_extended(symbol, "4h", n_candles_4h)
+
+    # 2 ── Build feature matrix once (liq features use dist_max as reference) ──
+    X_raw = build_feature_matrix(df_1h, df_4h, df_oi, df_funding, dist_max)
+
+    # 3 ── Sweep thresholds ────────────────────────────────────────────────────
+    thresholds = np.linspace(dist_min, dist_max, n_points)
+    records: list[dict] = []
+
+    for thr in thresholds:
+        y_up, y_dn = build_labels(df_1h, window_h, thr)
+
+        combined = (
+            X_raw
+            .join(y_up.rename("y_up"))
+            .join(y_dn.rename("y_dn"))
+            .dropna()
+        )
+        if len(combined) < 100:
+            continue
+
+        X   = combined[X_raw.columns]
+        y_u = combined["y_up"].astype(int)
+        y_d = combined["y_dn"].astype(int)
+
+        sig = MLSignal(window_h, thr)
+        try:
+            sig.fit(X, y_u, y_d)
+        except ValueError:
+            continue
+
+        cur = sig.current_signal(X)
+        records.append({
+            "threshold": round(float(thr), 4),
+            "p_up":      cur["p_up"],
+            "p_dn":      cur["p_dn"],
+        })
+
+    # 4 ── Enforce monotonicity: P must decrease as threshold increases ─────────
+    df = pd.DataFrame(records).sort_values("threshold").reset_index(drop=True)
+    if len(df) >= 2:
+        iso = IsotonicRegression(increasing=False, out_of_bounds="clip")
+        df["p_up"] = iso.fit_transform(df["threshold"].values, df["p_up"].values)
+        df["p_dn"] = iso.fit_transform(df["threshold"].values, df["p_dn"].values)
+
+    current_price = float(df_1h["close"].iloc[-1])
+    return {"dist_df": df, "current_price": current_price}

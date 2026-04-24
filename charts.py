@@ -741,6 +741,122 @@ def plot_ml_signal(
     return fig
 
 
+# ── 9. ML Probability Distribution ──────────────────────────────────────────
+
+def plot_probability_distribution(
+    dist_df: pd.DataFrame,
+    symbol: str,
+    window_h: int,
+    current_price: float,
+) -> go.Figure:
+    """
+    Single-panel chart showing the probability of reaching each price level
+    within window_h hours, for a range of thresholds.
+
+    Left of current price  — P(price falls to that level)  [red curve]
+    Right of current price — P(price rises to that level)  [green curve]
+
+    Parameters
+    ----------
+    dist_df       : DataFrame with columns (threshold, p_up, p_dn)
+                    from run_probability_distribution(), sorted ascending.
+    current_price : last close used as the reference price.
+    """
+    if dist_df.empty:
+        fig = go.Figure()
+        fig.update_layout(
+            title=f"{symbol} — Probability Distribution (no data)",
+            template="plotly_dark",
+        )
+        return fig
+
+    thresholds = dist_df["threshold"].values  # ascending: [dist_min … dist_max]
+    p_up       = dist_df["p_up"].values
+    p_dn       = dist_df["p_dn"].values
+
+    # Prices for each threshold level
+    up_prices = current_price * (1 + thresholds / 100)
+    dn_prices = current_price * (1 - thresholds / 100)  # descending
+
+    # Plot dn curve left-to-right: reverse so x is ascending (leftmost = largest thr)
+    dn_x   = dn_prices[::-1]
+    dn_y   = p_dn[::-1]
+    dn_thr = thresholds[::-1]
+
+    fig = go.Figure()
+
+    # Downside curve
+    fig.add_trace(go.Scatter(
+        x=dn_x, y=dn_y,
+        name=f"P(dn) — price falls to level in {window_h}h",
+        mode="lines+markers",
+        line=dict(color="#ef5350", width=2.5),
+        fill="tozeroy", fillcolor="rgba(239,83,80,0.12)",
+        customdata=dn_thr,
+        hovertemplate=(
+            "Price: %{x:,.4f}<br>"
+            "P(dn): %{y:.1%}<br>"
+            "−%{customdata:.2f}% from current"
+            "<extra></extra>"
+        ),
+    ))
+
+    # Upside curve
+    fig.add_trace(go.Scatter(
+        x=up_prices, y=p_up,
+        name=f"P(up) — price rises to level in {window_h}h",
+        mode="lines+markers",
+        line=dict(color="#26a69a", width=2.5),
+        fill="tozeroy", fillcolor="rgba(38,166,154,0.12)",
+        customdata=thresholds,
+        hovertemplate=(
+            "Price: %{x:,.4f}<br>"
+            "P(up): %{y:.1%}<br>"
+            "+%{customdata:.2f}% from current"
+            "<extra></extra>"
+        ),
+    ))
+
+    # Current price marker (numeric x-axis → add_vline works fine)
+    fig.add_vline(
+        x=current_price,
+        line_dash="dash",
+        line_color="rgba(255,255,0,0.65)",
+        line_width=1.5,
+        annotation_text=f"  {current_price:,.4f}",
+        annotation_position="top right",
+        annotation_font_color="rgba(255,255,0,0.85)",
+    )
+
+    # Horizontal reference lines
+    for level in (0.75, 0.50, 0.25):
+        fig.add_hline(
+            y=level, line_dash="dot",
+            line_color="rgba(255,255,255,0.18)", line_width=0.8,
+            annotation_text=f" {level:.0%}",
+            annotation_position="right",
+            annotation_font_color="rgba(255,255,255,0.40)",
+            annotation_font_size=10,
+        )
+
+    fig.update_layout(
+        title=(
+            f"{symbol} — Probability Distribution "
+            f"(window={window_h}h · "
+            f"{thresholds[0]:.1f}%–{thresholds[-1]:.1f}%)"
+        ),
+        xaxis_title="Price level",
+        yaxis_title="Probability",
+        template="plotly_dark",
+        height=520,
+        legend=dict(orientation="h", yanchor="bottom", y=1.01,
+                    xanchor="right", x=1, font_size=11),
+        margin=dict(l=60, r=80, t=70, b=50),
+    )
+    fig.update_yaxes(range=[0, 1], tickformat=".0%")
+    return fig
+
+
 # ── Save all charts to disk ───────────────────────────────────────────────────
 
 def _chart_entries(
