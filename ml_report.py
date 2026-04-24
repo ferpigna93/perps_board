@@ -45,8 +45,12 @@ def parse_args() -> argparse.Namespace:
                    help=f"Binance symbol, e.g. BTCUSDT (default: {config.SYMBOL})")
     p.add_argument("--window", type=int, default=ml.DEFAULT_WINDOW_H,
                    help="Forecast horizon in hours (default: %(default)s)")
-    p.add_argument("--threshold", type=float, default=ml.DEFAULT_THRESHOLD_PCT,
-                   help="Target move %% for labels (default: %(default)s)")
+    p.add_argument("--threshold", type=float, default=None,
+                   help=(
+                       "Target move %% for the main signal labels. "
+                       f"Defaults to --dist-max when --dist is used, "
+                       f"otherwise {ml.DEFAULT_THRESHOLD_PCT}%%"
+                   ))
     p.add_argument("--candles", type=int, default=ml.DEFAULT_N_CANDLES_1H,
                    help="1h candles of training history (default: %(default)s)")
     p.add_argument("--signal-threshold", type=float, default=0.75,
@@ -162,6 +166,12 @@ def print_top_features(importances: dict, top_n: int = 10) -> None:
 def main() -> None:
     args   = parse_args()
     symbol = args.symbol.upper().replace(".P", "")
+
+    # Resolve threshold: when --dist is active and --threshold was not set
+    # explicitly, align the main signal with --dist-max so both use the same
+    # data regime (avoids "0 positive examples" errors on low-volatility assets).
+    if args.threshold is None:
+        args.threshold = args.dist_max if args.dist else ml.DEFAULT_THRESHOLD_PCT
 
     console.rule(f"[bold cyan] ML REPORT — {symbol} [/bold cyan]")
     console.print(
